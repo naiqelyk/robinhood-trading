@@ -19,7 +19,7 @@ guardrails:
   max_position_pct: 0.80
   max_single_order_usd: 5000
   max_total_order_usd: 20000
-  min_position_usd: 50
+  min_position_usd: 5
   min_rebalance_drift_pct: 0.03
   allow_sells: true
   allow_buys: true

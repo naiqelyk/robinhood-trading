@@ -1,5 +1,6 @@
 from __future__ import annotations
 import re
+import httpx
 import anthropic
 from robinhood.models import PortfolioState, RebalancePlan, ExecutionSummary
 
@@ -38,6 +39,9 @@ def _build_toolset(allowed_tools: list[str]) -> dict:
     }
 
 
+_TURN_TIMEOUT = httpx.Timeout(180.0, connect=30.0)
+
+
 def _run_loop(
     client: anthropic.Anthropic,
     model: str,
@@ -57,33 +61,43 @@ def _run_loop(
             on_status(f"turn {i + 1}…")
 
         text_chars = 0
-        with client.beta.messages.stream(
-            model=model,
-            max_tokens=4096,
-            system=system,
-            messages=messages,
-            mcp_servers=[mcp_server],
-            tools=[toolset],
-            betas=[MCP_BETA],
-        ) as stream:
-            for event in stream:
-                if on_status:
-                    etype = getattr(event, "type", None)
-                    if etype == "content_block_start":
-                        block = getattr(event, "content_block", None)
-                        btype = getattr(block, "type", None)
-                        if btype == "tool_use":
-                            on_status(f"turn {i + 1} — {getattr(block, 'name', 'tool')}…")
-                            text_chars = 0
-                        elif btype == "text":
-                            on_status(f"turn {i + 1} — writing response…")
-                            text_chars = 0
-                    elif etype == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        if getattr(delta, "type", None) == "text_delta":
-                            text_chars += len(getattr(delta, "text", ""))
-                            on_status(f"turn {i + 1} — writing response ({text_chars} chars)…")
-            response = stream.get_final_message()
+        try:
+            with client.beta.messages.stream(
+                model=model,
+                max_tokens=4096,
+                system=system,
+                messages=messages,
+                mcp_servers=[mcp_server],
+                tools=[toolset],
+                betas=[MCP_BETA],
+                timeout=_TURN_TIMEOUT,
+            ) as stream:
+                for event in stream:
+                    if on_status:
+                        etype = getattr(event, "type", None)
+                        if etype == "content_block_start":
+                            block = getattr(event, "content_block", None)
+                            btype = getattr(block, "type", None)
+                            if btype in ("tool_use", "mcp_tool_use"):
+                                name = getattr(block, "name", None) or getattr(block, "tool_name", "tool")
+                                on_status(f"turn {i + 1} — {name}…")
+                                text_chars = 0
+                            elif btype == "mcp_tool_result":
+                                on_status(f"turn {i + 1} — tool result received…")
+                            elif btype == "text":
+                                on_status(f"turn {i + 1} — writing response…")
+                                text_chars = 0
+                        elif etype == "content_block_delta":
+                            delta = getattr(event, "delta", None)
+                            if getattr(delta, "type", None) == "text_delta":
+                                text_chars += len(getattr(delta, "text", ""))
+                                on_status(f"turn {i + 1} — writing response ({text_chars} chars)…")
+                response = stream.get_final_message()
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(
+                f"Executor timed out on turn {i + 1} after {_TURN_TIMEOUT.read}s "
+                "(Robinhood MCP did not respond). Re-run or try --reauth."
+            ) from exc
 
         messages.append({"role": "assistant", "content": response.content})
 

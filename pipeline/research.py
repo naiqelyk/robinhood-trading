@@ -1,9 +1,10 @@
 from __future__ import annotations
 import os
 import re
+import json
 from collections import Counter
 from dataclasses import dataclass, field, asdict
-import json
+import anthropic
 import yfinance as yf
 from tavily import TavilyClient
 
@@ -171,27 +172,57 @@ _TICKER_BLOCKLIST = {
 }
 
 
+def _build_discovery_queries(client: anthropic.Anthropic, strategy: str) -> list[str]:
+    """Use Claude to turn the strategy into targeted search queries."""
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=512,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Investment strategy: {strategy}\n\n"
+                "Generate 5 web search queries to find specific stock tickers that fit this strategy. "
+                "Mix sources: Reddit (r/wallstreetbets, r/stocks, r/investing), financial news, and analyst sites. "
+                "Make queries specific to the strategy's themes (sector, style, criteria). "
+                "Return ONLY a JSON array of 5 strings, no other text."
+            ),
+        }],
+    )
+    raw = response.content[0].text.strip()
+    m = re.search(r'(\[[\s\S]*\])', raw)
+    if m:
+        raw = m.group(1)
+    return json.loads(raw)
+
+
 def discover_symbols(
-    strategy_hint: str = "",
+    strategy: str = "",
     max_symbols: int = 10,
+    client: anthropic.Anthropic | None = None,
     console=None,
 ) -> list[str]:
-    """Search Reddit finance communities and financial news for trending stock symbols."""
+    """Search Reddit and financial news for stock symbols matching the strategy."""
     api_key = os.environ.get("TAVILY_API_KEY")
     if not api_key:
         return []
 
     tavily = TavilyClient(api_key=api_key)
 
-    queries = [
-        "reddit wallstreetbets stocks discussion picks today",
-        "reddit r/stocks analysis watchlist this week",
-        "reddit r/investing stock picks recommendations",
-        "trending stocks to watch financial news this week",
-        "top stock picks analysts recommend buy now",
+    # Use Claude to generate strategy-specific queries when a strategy and client are provided
+    if strategy and client:
+        try:
+            queries = _build_discovery_queries(client, strategy)
+        except Exception:
+            queries = []
+    else:
+        queries = []
+
+    # Always include a couple of broad Reddit queries as a fallback/supplement
+    fallback = [
+        "reddit r/stocks r/investing top stock picks this week",
+        "trending stocks analysts recommend buy now",
     ]
-    if strategy_hint:
-        queries.append(f"{strategy_hint} best stocks to consider")
+    queries = queries + [q for q in fallback if q not in queries]
 
     all_text = ""
     for query in queries:
@@ -210,11 +241,9 @@ def discover_symbols(
     if not all_text.strip():
         return []
 
-    # Extract standalone uppercase words that look like tickers (1–5 letters)
     candidates = re.findall(r'\b([A-Z]{1,5})\b', all_text)
     counts = Counter(c for c in candidates if c not in _TICKER_BLOCKLIST and len(c) >= 2)
 
-    # Return the most-mentioned symbols (higher count = more discussed = higher signal)
     top = [sym for sym, _ in counts.most_common(max_symbols * 3)]
     return top[:max_symbols]
 

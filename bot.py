@@ -172,10 +172,11 @@ def main() -> None:
     # ── Discovery: external signals from Reddit & news ────────────────────────
     if cfg.research.discovery_max_symbols > 0:
         console.rule("[bold blue]Discovery — Reddit & News[/bold blue]")
-        with console.status("[bold]Searching Reddit and financial news for trending stocks…[/bold]"):
+        with console.status("[bold]Searching Reddit and financial news for stocks matching your strategy…[/bold]"):
             discovered = discover_symbols(
-                strategy_hint=strategy,
+                strategy=strategy,
                 max_symbols=cfg.research.discovery_max_symbols,
+                client=client,
                 console=console,
             )
         if discovered:

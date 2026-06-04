@@ -7,8 +7,8 @@ class Position(BaseModel):
     symbol: str
     quantity: float
     market_value: float
-    avg_cost: float
-    unrealized_pnl_pct: float
+    avg_cost: Optional[float] = None
+    unrealized_pnl_pct: Optional[float] = None
 
 
 class PortfolioState(BaseModel):

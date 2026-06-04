@@ -12,10 +12,11 @@ research:
     search_queries: []
   news_articles_per_symbol: 5
   fundamental_lookback_days: 365
+  discovery_max_symbols: 10   # symbols to discover via Reddit/news; 0 to disable
 
 guardrails:
   max_positions: 10
-  max_position_pct: 0.20
+  max_position_pct: 0.80
   max_single_order_usd: 5000
   max_total_order_usd: 20000
   min_position_usd: 50

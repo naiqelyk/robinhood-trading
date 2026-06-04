@@ -28,6 +28,7 @@ class ResearchConfig(BaseModel):
     candidate_universe: CandidateUniverse = Field(default_factory=CandidateUniverse)
     news_articles_per_symbol: int = 5
     fundamental_lookback_days: int = 365
+    discovery_max_symbols: int = 10
 
 
 class GuardrailsConfig(BaseModel):

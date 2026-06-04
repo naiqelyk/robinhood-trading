@@ -20,7 +20,7 @@ from display import (
     confirm_execution,
     print_execution_summary,
 )
-from pipeline.research import research_symbols
+from pipeline.research import research_symbols, discover_symbols
 from pipeline.analyst import analyze
 from pipeline.executor import get_portfolio_state, execute_plan
 from robinhood.auth import get_robinhood_mcp_token, clear_cached_token
@@ -168,6 +168,23 @@ def main() -> None:
 
     current_symbols = [p.symbol for p in portfolio.positions]
     candidate_symbols = resolve_symbols(args, cfg, current_symbols)
+
+    # ── Discovery: external signals from Reddit & news ────────────────────────
+    if cfg.research.discovery_max_symbols > 0:
+        console.rule("[bold blue]Discovery — Reddit & News[/bold blue]")
+        with console.status("[bold]Searching Reddit and financial news for trending stocks…[/bold]"):
+            discovered = discover_symbols(
+                strategy_hint=strategy,
+                max_symbols=cfg.research.discovery_max_symbols,
+                console=console,
+            )
+        if discovered:
+            new_finds = [s for s in discovered if s not in candidate_symbols]
+            if new_finds:
+                console.print(f"Discovered [green]{len(new_finds)}[/green] new symbols: {', '.join(new_finds)}")
+            candidate_symbols = list(dict.fromkeys(candidate_symbols + discovered))
+        else:
+            console.print("[dim]No symbols discovered (TAVILY_API_KEY not set or no results).[/dim]")
 
     if not candidate_symbols:
         console.print("[yellow]No candidate symbols to research. Add symbols via --symbols or config.yaml.[/yellow]")

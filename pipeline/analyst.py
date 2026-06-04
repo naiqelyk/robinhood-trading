@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import re
 import anthropic
 from robinhood.models import TradeSignal, PortfolioState
 from pipeline.research import ResearchBundle
@@ -73,9 +74,13 @@ CONSTRAINTS:
         )
 
     raw = response.content[0].text.strip()
-    # Strip markdown code fences if Claude added them anyway
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    m = re.search(r'```(?:\w+)?\s*\n?([\s\S]*?)\n?```', raw)
+    if m:
+        raw = m.group(1).strip()
+    else:
+        m = re.search(r'(\[[\s\S]*\])', raw)
+        if m:
+            raw = m.group(1).strip()
 
     signals_data = json.loads(raw)
     return [TradeSignal.model_validate(s) for s in signals_data]

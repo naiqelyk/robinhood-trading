@@ -17,13 +17,13 @@ def print_portfolio(portfolio: PortfolioState) -> None:
     table.add_column("P&L %", justify="right")
 
     for p in portfolio.positions:
-        pnl_color = "green" if p.unrealized_pnl_pct >= 0 else "red"
+        pnl_color = "green" if (p.unrealized_pnl_pct or 0) >= 0 else "red"
         table.add_row(
             p.symbol,
             f"${p.market_value:,.2f}",
             f"{p.quantity:.4f}",
-            f"${p.avg_cost:.2f}",
-            f"[{pnl_color}]{p.unrealized_pnl_pct:+.1%}[/{pnl_color}]",
+            f"${p.avg_cost:.2f}" if p.avg_cost is not None else "N/A",
+            f"[{pnl_color}]{p.unrealized_pnl_pct:+.1%}[/{pnl_color}]" if p.unrealized_pnl_pct is not None else "N/A",
         )
 
     console.print(table)

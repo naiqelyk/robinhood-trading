@@ -1,5 +1,7 @@
 from __future__ import annotations
 import os
+import re
+from collections import Counter
 from dataclasses import dataclass, field, asdict
 import json
 import yfinance as yf
@@ -128,6 +130,93 @@ def fetch_news(symbol: str, max_articles: int = 5) -> NewsData:
         pass
 
     return NewsData(symbol=symbol, articles=articles, analyst_snippets=analyst_snippets)
+
+
+# Common English words and finance abbreviations that aren't stock tickers
+_TICKER_BLOCKLIST = {
+    "A", "I", "AM", "AN", "AT", "BE", "BY", "DO", "GO", "HE", "IF", "IN",
+    "IS", "IT", "ME", "MY", "NO", "OF", "ON", "OR", "SO", "TO", "UP", "US",
+    "WE", "AND", "ARE", "BUT", "FOR", "HAS", "HOW", "ITS", "LET", "NOT",
+    "NOW", "OFF", "OUR", "OUT", "OWN", "SAY", "SHE", "THE", "TOO", "TWO",
+    "USE", "WAS", "WAY", "WHO", "WHY", "YET", "YOU", "ALSO", "BACK", "BEEN",
+    "COME", "DOES", "EACH", "EVEN", "FROM", "GIVE", "HAVE", "HERE", "JUST",
+    "KNOW", "LIKE", "LOOK", "MAKE", "MOST", "MUCH", "NEED", "ONLY", "OVER",
+    "SAID", "SAME", "SEEM", "SOME", "SUCH", "THAN", "THAT", "THEM", "THEN",
+    "THEY", "THIS", "TIME", "VERY", "WANT", "WELL", "WERE", "WHAT", "WHEN",
+    "WITH", "YEAR", "YOUR", "ABOUT", "AFTER", "AGAIN", "COULD", "EVERY",
+    "FIRST", "FOUND", "GOING", "GREAT", "MIGHT", "OTHER", "RIGHT", "SINCE",
+    "THINK", "THREE", "UNDER", "UNTIL", "WHERE", "WHICH", "WHILE", "WOULD",
+    # Finance/Reddit jargon that isn't a ticker
+    "DD", "ER", "PM", "AH", "IMO", "IMHO", "TBH", "FYI", "EOD", "EOM",
+    "ETF", "IPO", "YTD", "ATH", "ALL", "NEW", "BIG", "HIGH", "LOW", "TOP",
+    "CEO", "CFO", "CTO", "COO", "SEC", "NYSE", "GDP", "FED", "USA", "UK",
+    "USD", "EUR", "GBP", "API", "YOLO", "FOMO", "HODL", "REIT", "SPAC",
+    "BUY", "SELL", "HOLD", "LONG", "SHORT", "PUTS", "CALL", "CALLS",
+    "STOCK", "TRADE", "PRICE", "GAIN", "LOSS", "BULL", "BEAR", "MOON",
+    "GOOD", "BEST", "NEXT", "LAST", "WEEK", "DAYS", "CASH", "DEBT", "FUND",
+    "NEWS", "EDIT", "LINK", "POST", "SITE", "TEXT", "VIEW", "DONE", "OPEN",
+    "RATE", "RISK", "PLAN", "DATA", "YEAR", "SAID", "MUST", "ABLE", "BOTH",
+    "DOWN", "LESS", "MORE", "MUCH", "MANY", "MOST", "NEAR", "ONLY", "PAST",
+    "PLUS", "REAL", "SAME", "SEEN", "SURE", "TAKE", "THAN", "THEN", "THEY",
+    "TRUE", "TURN", "TYPE", "USED", "ZERO", "BEEN", "EACH", "EVEN", "EVER",
+    "FREE", "FROM", "FULL", "GAVE", "GETS", "GIVE", "GOES", "GONE", "GREW",
+    "GROW", "HELP", "HOME", "HOPE", "HUGE", "INTO", "JOIN", "JUST", "KEEP",
+    "KNEW", "KNOW", "LATE", "LEAD", "LEFT", "LIFE", "LINE", "LIVE", "LOSS",
+    "LOST", "LOVE", "MAIN", "MAKE", "MEAN", "MEET", "MOVE", "NEED", "ONCE",
+    "ONES", "ONLY", "OPEN", "PART", "PLAY", "PUTS", "READ", "RISE", "ROAD",
+    "ROLE", "RULE", "RUNS", "SELL", "SENT", "SETS", "SHOW", "SIDE", "SIGN",
+    "SOLD", "SOME", "SOON", "SORT", "STAY", "STEP", "STOP", "TALK", "TELL",
+    "TERM", "TEST", "TILL", "TOLD", "TOOK", "TOPS", "TOWN", "UNIT", "UPON",
+    "WAIT", "WALL", "WENT", "WIDE", "WILL", "WINS", "WORD", "WORK", "ZONE",
+}
+
+
+def discover_symbols(
+    strategy_hint: str = "",
+    max_symbols: int = 10,
+    console=None,
+) -> list[str]:
+    """Search Reddit finance communities and financial news for trending stock symbols."""
+    api_key = os.environ.get("TAVILY_API_KEY")
+    if not api_key:
+        return []
+
+    tavily = TavilyClient(api_key=api_key)
+
+    queries = [
+        "reddit wallstreetbets stocks discussion picks today",
+        "reddit r/stocks analysis watchlist this week",
+        "reddit r/investing stock picks recommendations",
+        "trending stocks to watch financial news this week",
+        "top stock picks analysts recommend buy now",
+    ]
+    if strategy_hint:
+        queries.append(f"{strategy_hint} best stocks to consider")
+
+    all_text = ""
+    for query in queries:
+        try:
+            resp = tavily.search(
+                query=query,
+                search_depth="basic",
+                max_results=5,
+                days=7,
+            )
+            for r in resp.get("results", []):
+                all_text += " " + r.get("content", "") + " " + r.get("title", "")
+        except Exception:
+            pass
+
+    if not all_text.strip():
+        return []
+
+    # Extract standalone uppercase words that look like tickers (1–5 letters)
+    candidates = re.findall(r'\b([A-Z]{1,5})\b', all_text)
+    counts = Counter(c for c in candidates if c not in _TICKER_BLOCKLIST and len(c) >= 2)
+
+    # Return the most-mentioned symbols (higher count = more discussed = higher signal)
+    top = [sym for sym, _ in counts.most_common(max_symbols * 3)]
+    return top[:max_symbols]
 
 
 def research_symbols(

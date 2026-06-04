@@ -6,7 +6,7 @@ A Python CLI trading bot that researches stocks, generates trade signals from a 
 
 ## Architecture
 
-The bot runs a structured three-phase pipeline. Python orchestrates each phase; Claude acts as a reasoning engine in phases 1–2 and as an agentic executor with live Robinhood tool access in phase 3. Safety guardrails are enforced in plain Python code between analysis and execution — Claude never bypasses them.
+The bot runs a structured pipeline. Python orchestrates each phase; Claude acts as a reasoning engine in phases 1–2 and as an agentic executor with live Robinhood tool access in phase 3. Safety guardrails are enforced in plain Python code between analysis and execution — Claude never bypasses them.
 
 ```
 bot.py --strategy "..."
@@ -15,6 +15,11 @@ bot.py --strategy "..."
   │                                get_accounts → get_portfolio + get_equity_positions
   │                                Token auto-obtained via browser OAuth on first run,
   │                                then cached in macOS Keychain
+  │
+  ├─ Discovery: Reddit & News      Tavily web search
+  │                                Searches r/wallstreetbets, r/stocks, r/investing
+  │                                and financial news for trending symbols,
+  │                                then merges them into the candidate universe
   │
   ├─ Phase 1: Research             yfinance + Tavily web/news search
   │                                Fundamentals, price technicals, recent news,
@@ -50,7 +55,7 @@ trading-bot/
 ├── display.py              # Rich terminal tables and confirmation prompts
 ├── requirements.txt
 ├── pipeline/
-│   ├── research.py         # yfinance fundamentals + Tavily news/finance search
+│   ├── research.py         # yfinance fundamentals + Tavily news/finance search + discovery
 │   ├── analyst.py          # Claude analysis call (no tools) → TradeSignal list
 │   └── executor.py         # Anthropic MCP loop — portfolio snapshot + trade execution
 └── robinhood/
@@ -67,7 +72,7 @@ trading-bot/
 - Python 3.9+
 - A Robinhood account with an **Agentic** (cash) sub-account enabled
 - An Anthropic API key — [console.anthropic.com](https://console.anthropic.com)
-- *(Optional)* A Tavily API key for news/analyst research — [tavily.com](https://tavily.com) (free tier available)
+- *(Optional)* A Tavily API key for news/analyst research and discovery — [tavily.com](https://tavily.com) (free tier available)
 
 ### 2. Install dependencies
 
@@ -102,15 +107,16 @@ On first run this opens a browser to authorize with Robinhood (PKCE OAuth). Afte
 ### Basic run
 
 ```bash
-python3 bot.py --strategy "Buy momentum tech stocks, max 5 positions, no single position > 20%"
+python3 bot.py --strategy "Buy momentum tech stocks, max 5 positions"
 ```
 
 The bot will:
 1. Fetch your current portfolio via Robinhood MCP
-2. Research candidate symbols
-3. Generate trade signals via Claude
-4. Show you a proposed trading plan
-5. Ask for confirmation before placing any orders
+2. Search Reddit and financial news for trending stocks
+3. Research all candidate symbols (portfolio + discovered + any static symbols)
+4. Generate trade signals via Claude
+5. Show you a proposed trading plan
+6. Ask for confirmation before placing any orders
 
 ### Dry run (no orders placed)
 
@@ -134,7 +140,7 @@ Stops after analysis and prints trade signals. Useful for evaluating strategy qu
 python3 bot.py --strategy "Buy the dip in semiconductors" --symbols NVDA AMD INTC ASML TSM
 ```
 
-Without `--symbols`, the universe comes from `config.yaml`. Current holdings are always included.
+`--symbols` adds to the universe (current holdings and discovered symbols are still included). To research only specific symbols and skip discovery, set `discovery_max_symbols: 0` in `config.yaml`.
 
 ### Skip the confirmation prompt
 
@@ -174,14 +180,15 @@ models:
 research:
   candidate_universe:
     method: "static"            # "static" = use list below; "search" = Robinhood search
-    static_symbols:             # Symbols to always research
+    static_symbols:             # Symbols to always research (in addition to discovered ones)
       - SPY
       - QQQ
       - NVDA
+  discovery_max_symbols: 10     # Symbols to discover via Reddit/news; 0 to disable
 
 guardrails:
   max_positions: 10             # Hard cap on open positions
-  max_position_pct: 0.20        # No single position > 20% of portfolio
+  max_position_pct: 0.80        # No single position > 80% of portfolio
   max_single_order_usd: 5000    # Per-order dollar cap
   max_total_order_usd: 20000    # Total deployment cap per run
   min_position_usd: 50          # Drop orders smaller than this
@@ -200,6 +207,19 @@ python3 bot.py --strategy "..." --max-positions 3 --max-position-pct 0.15
 
 ---
 
+## Discovery
+
+When `TAVILY_API_KEY` is set and `discovery_max_symbols > 0`, the bot runs a discovery step before Phase 1 that searches for trending stocks across:
+
+- **Reddit**: r/wallstreetbets, r/stocks, r/investing
+- **Financial news**: analyst recommendations and trending tickers
+
+Discovered symbols are ranked by how frequently they appear across search results and merged into the research candidate list. The analyst then evaluates them against your strategy just like any other symbol — it won't buy something just because Reddit mentioned it.
+
+Set `discovery_max_symbols: 0` in `config.yaml` to disable this step entirely.
+
+---
+
 ## Guardrails
 
 All limits are enforced in Python before Claude ever sees the execution plan. Claude cannot override them.
@@ -207,7 +227,7 @@ All limits are enforced in Python before Claude ever sees the execution plan. Cl
 | Guardrail | Default | What it does |
 |---|---|---|
 | `max_positions` | 10 | Drops lowest-conviction buys beyond this count |
-| `max_position_pct` | 20% | Clips any single order to `portfolio_value × 0.20` |
+| `max_position_pct` | 80% | Clips any single order to `portfolio_value × 0.80` |
 | `max_single_order_usd` | $5,000 | Hard per-order cap |
 | `max_total_order_usd` | $20,000 | Scales all buys down proportionally if exceeded |
 | `min_position_usd` | $50 | Drops orders below Robinhood's practical minimum |
@@ -225,7 +245,7 @@ Sells are always executed before buys to free up cash first.
 
 ```
 "Buy momentum tech stocks — prioritize names above their 50-day MA with 
-positive earnings growth. Max 5 positions, no single position > 15%."
+positive earnings growth. Max 5 positions."
 
 "Trade my portfolio to equal weight across current holdings."
 
@@ -249,10 +269,10 @@ Run `python3 bot.py --reauth` to clear the cached Keychain token and re-run the 
 The auth URL is printed to the terminal — copy and paste it into your browser manually to complete authorization.
 
 **`No candidate symbols to research`**
-Add symbols via `--symbols` or set `static_symbols` in `config.yaml`.
+Add symbols via `--symbols` or set `static_symbols` in `config.yaml`. Discovery requires `TAVILY_API_KEY`.
 
 **`Analysis failed: json.JSONDecodeError`**
 Claude occasionally returns malformed JSON under heavy load. Re-run the command — the analyst prompt includes explicit JSON-only instructions and this is rare.
 
 **Tavily not returning news**
-The bot works without `TAVILY_API_KEY` — research falls back to fundamentals only. Set the key to enable news and analyst data.
+The bot works without `TAVILY_API_KEY` — research falls back to fundamentals only, and the discovery step is skipped. Set the key to enable news, analyst data, and Reddit discovery.

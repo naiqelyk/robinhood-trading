@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 import anthropic
 from robinhood.models import PortfolioState, RebalancePlan, ExecutionSummary
 
@@ -9,7 +10,6 @@ READ_ONLY_TOOLS = [
     "get_accounts",
     "get_portfolio",
     "get_equity_positions",
-    "get_equity_orders",
 ]
 
 EXECUTION_TOOLS = [
@@ -56,7 +56,8 @@ def _run_loop(
         if on_status:
             on_status(f"turn {i + 1}…")
 
-        response = client.beta.messages.create(
+        text_chars = 0
+        with client.beta.messages.stream(
             model=model,
             max_tokens=4096,
             system=system,
@@ -64,7 +65,25 @@ def _run_loop(
             mcp_servers=[mcp_server],
             tools=[toolset],
             betas=[MCP_BETA],
-        )
+        ) as stream:
+            for event in stream:
+                if on_status:
+                    etype = getattr(event, "type", None)
+                    if etype == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        btype = getattr(block, "type", None)
+                        if btype == "tool_use":
+                            on_status(f"turn {i + 1} — {getattr(block, 'name', 'tool')}…")
+                            text_chars = 0
+                        elif btype == "text":
+                            on_status(f"turn {i + 1} — writing response…")
+                            text_chars = 0
+                    elif etype == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if getattr(delta, "type", None) == "text_delta":
+                            text_chars += len(getattr(delta, "text", ""))
+                            on_status(f"turn {i + 1} — writing response ({text_chars} chars)…")
+            response = stream.get_final_message()
 
         messages.append({"role": "assistant", "content": response.content})
 
@@ -78,6 +97,17 @@ def _run_loop(
         raise RuntimeError(f"Unexpected stop_reason: {response.stop_reason}")
 
     raise RuntimeError(f"Executor loop reached max_iterations={max_iterations} without finishing")
+
+
+def _extract_json(text: str) -> str:
+    text = text.strip()
+    m = re.search(r'```(?:\w+)?\s*\n?([\s\S]*?)\n?```', text)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r'(\{[\s\S]*\})', text)
+    if m:
+        return m.group(1).strip()
+    return text
 
 
 def _extract_last_text(messages: list[dict]) -> str:
@@ -115,9 +145,7 @@ def get_portfolio_state(
         token, READ_ONLY_TOOLS,
         on_status=on_status,
     )
-    raw = _extract_last_text(messages).strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    raw = _extract_json(_extract_last_text(messages))
     return PortfolioState.model_validate_json(raw)
 
 
@@ -154,7 +182,5 @@ REBALANCE PLAN TO EXECUTE:
         max_iterations=max_iterations,
         on_status=on_status,
     )
-    raw = _extract_last_text(messages).strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    raw = _extract_json(_extract_last_text(messages))
     return ExecutionSummary.model_validate_json(raw)

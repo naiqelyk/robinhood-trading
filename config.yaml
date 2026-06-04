@@ -1,0 +1,29 @@
+account:
+  account_id: "417226214"
+
+models:
+  analyst: "claude-opus-4-8"
+  executor: "claude-sonnet-4-6"
+
+research:
+  candidate_universe:
+    method: "static"           # "static" or "search"
+    static_symbols: []
+    search_queries: []
+  news_articles_per_symbol: 5
+  fundamental_lookback_days: 365
+
+guardrails:
+  max_positions: 10
+  max_position_pct: 0.20
+  max_single_order_usd: 5000
+  max_total_order_usd: 20000
+  min_position_usd: 50
+  min_rebalance_drift_pct: 0.03
+  allow_sells: true
+  allow_buys: true
+  require_confirmation: true
+  dry_run: false
+
+execution:
+  max_executor_iterations: 20

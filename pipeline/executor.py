@@ -1,0 +1,188 @@
+from __future__ import annotations
+import json
+import anthropic
+from robinhood.models import PortfolioState, RebalancePlan, ExecutionSummary
+
+ROBINHOOD_MCP_URL = "https://agent.robinhood.com/mcp/trading"
+MCP_BETA = "mcp-client-2025-11-20"
+
+READ_ONLY_TOOLS = [
+    "get_accounts",
+    "get_portfolio",
+    "get_equity_positions",
+    "get_equity_orders",
+]
+
+EXECUTION_TOOLS = [
+    "get_equity_quotes",
+    "get_equity_tradability",
+    "review_equity_order",
+    "place_equity_order",
+]
+
+
+def _build_mcp_server(token: str) -> dict:
+    return {
+        "type": "url",
+        "url": ROBINHOOD_MCP_URL,
+        "name": "robinhood",
+        "authorization_token": token,
+    }
+
+
+def _build_toolset(allowed_tools: list[str]) -> dict:
+    return {
+        "type": "mcp_toolset",
+        "mcp_server_name": "robinhood",
+        "default_config": {"enabled": False},
+        "configs": {tool: {"enabled": True} for tool in allowed_tools},
+    }
+
+
+def _get_tool_names(content) -> list[str]:
+    names = []
+    for block in content:
+        btype = getattr(block, "type", None) or (block.get("type") if isinstance(block, dict) else None)
+        if btype == "tool_use":
+            name = getattr(block, "name", None) or (block.get("name") if isinstance(block, dict) else None)
+            if name:
+                names.append(name)
+    return names
+
+
+def _run_loop(
+    client: anthropic.Anthropic,
+    model: str,
+    system: str,
+    initial_message: str,
+    token: str,
+    allowed_tools: list[str],
+    max_iterations: int = 20,
+    on_status=None,
+) -> list[dict]:
+    mcp_server = _build_mcp_server(token)
+    toolset = _build_toolset(allowed_tools)
+
+    messages = [{"role": "user", "content": initial_message}]
+
+    for i in range(max_iterations):
+        if on_status:
+            on_status(f"turn {i + 1} — waiting for response…")
+
+        response = client.beta.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=system,
+            messages=messages,
+            mcp_servers=[mcp_server],
+            tools=[toolset],
+            betas=[MCP_BETA],
+        )
+
+        messages.append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason == "end_turn":
+            return messages
+
+        if response.stop_reason == "pause_turn":
+            # Server-side iteration limit hit — re-issue without a new user message
+            tool_names = _get_tool_names(response.content)
+            if on_status:
+                if tool_names:
+                    on_status(f"turn {i + 1} — calling {', '.join(tool_names)}…")
+                else:
+                    on_status(f"turn {i + 1} — server continuing…")
+            continue
+
+        if response.stop_reason == "max_tokens":
+            if on_status:
+                on_status(f"turn {i + 1} — token limit reached, continuing…")
+            messages.append({"role": "user", "content": "Please continue."})
+            continue
+
+        raise RuntimeError(f"Unexpected stop_reason: {response.stop_reason}")
+
+    raise RuntimeError(f"Executor loop reached max_iterations={max_iterations} without finishing")
+
+
+def _extract_last_text(messages: list[dict]) -> str:
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for block in reversed(content):
+                    if hasattr(block, "text"):
+                        return block.text
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        return block["text"]
+            if isinstance(content, str):
+                return content
+    raise ValueError("No assistant text found in message history")
+
+
+def get_portfolio_state(
+    client: anthropic.Anthropic,
+    model: str,
+    token: str,
+    on_status=None,
+) -> PortfolioState:
+    system = (
+        "You are a portfolio data fetcher. "
+        "Call get_accounts to find the agentic_allowed=true account, then call get_portfolio "
+        "and get_equity_positions for that account. "
+        "Return ONLY a single JSON object — no prose, no markdown — with keys: "
+        "account_id (string), buying_power (number), total_value (number), "
+        "positions (list of {symbol, quantity, market_value, avg_cost, unrealized_pnl_pct})."
+    )
+    messages = _run_loop(
+        client, model, system,
+        "Fetch my current portfolio state.",
+        token,
+        READ_ONLY_TOOLS,
+        on_status=on_status,
+    )
+    raw = _extract_last_text(messages)
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    return PortfolioState.model_validate_json(raw)
+
+
+def execute_plan(
+    client: anthropic.Anthropic,
+    model: str,
+    token: str,
+    plan: RebalancePlan,
+    account_id: str,
+    max_iterations: int = 20,
+    on_status=None,
+) -> ExecutionSummary:
+    system = f"""You are a trade execution agent for Robinhood account {account_id}.
+
+EXECUTION RULES (strictly enforced):
+1. Call review_equity_order BEFORE every place_equity_order. If review returns errors, skip that symbol.
+2. Execute SELLS before BUYS.
+3. Use type="market" and dollar_amount for all orders (fractional shares).
+4. After each completed order, note: symbol, action, dollar_amount, order_id.
+5. If a symbol fails get_equity_tradability, skip it and record the reason.
+6. When all orders are done (or skipped), output ONLY this JSON (no prose):
+{{
+  "completed": [{{"symbol": "...", "action": "buy"|"sell", "dollar_amount": 0.0, "order_id": "..."}}],
+  "skipped": [{{"symbol": "...", "reason": "..."}}],
+  "errors": [{{"symbol": "...", "error": "..."}}]
+}}
+
+REBALANCE PLAN TO EXECUTE:
+{plan.model_dump_json(indent=2)}
+"""
+    messages = _run_loop(
+        client, model, system,
+        "Execute the rebalance plan.",
+        token,
+        EXECUTION_TOOLS,
+        max_iterations=max_iterations,
+        on_status=on_status,
+    )
+    raw = _extract_last_text(messages)
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    return ExecutionSummary.model_validate_json(raw)

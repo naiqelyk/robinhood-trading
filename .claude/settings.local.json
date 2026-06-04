@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 *)",
+      "Bash(/Users/kq/Claude/trading-bot/.venv/bin/python3 -c \"import sys; print\\(sys.path\\)\")"
+    ]
+  }
+}

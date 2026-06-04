@@ -23,7 +23,7 @@ from display import (
 from pipeline.research import research_symbols
 from pipeline.analyst import analyze
 from pipeline.executor import get_portfolio_state, execute_plan
-from robinhood.auth import get_robinhood_mcp_token
+from robinhood.auth import get_robinhood_mcp_token, clear_cached_token
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,11 +38,12 @@ Examples:
   python3 bot.py --strategy "..." --research-only
   python3 bot.py --test-connection
   python3 bot.py --strategy "..." --symbols NVDA MSFT AAPL
+  python3 bot.py --reauth
 
 Environment variables:
   ANTHROPIC_API_KEY     Required — Anthropic API key
   TAVILY_API_KEY        Optional — enables news/finance research
-  ROBINHOOD_MCP_TOKEN   Optional — override token from ~/.claude.json
+  ROBINHOOD_MCP_TOKEN   Optional — override cached Robinhood token
 """,
     )
 
@@ -54,12 +55,12 @@ Environment variables:
     parser.add_argument("--dry-run", action="store_true", help="Run pipeline but skip order execution")
     parser.add_argument("--no-confirm", action="store_true", help="Skip interactive confirmation")
     parser.add_argument("--research-only", action="store_true", help="Stop after analysis; print signals")
-    parser.add_argument("--test-connection", action="store_true", help="Test MCP connection and exit")
+    parser.add_argument("--test-connection", action="store_true", help="Test Robinhood MCP connection and exit")
+    parser.add_argument("--reauth", action="store_true", help="Clear cached token and re-run OAuth")
     parser.add_argument("--symbols", nargs="+", metavar="SYM", help="Restrict candidate universe")
     parser.add_argument("--max-positions", type=int, metavar="N")
     parser.add_argument("--max-position-pct", type=float, metavar="PCT")
     parser.add_argument("--log-file", metavar="PATH", help="Append JSON audit log")
-    parser.add_argument("--verbose", action="store_true", help="Print extra debug output")
 
     return parser.parse_args()
 
@@ -111,16 +112,21 @@ def write_audit_log(log_file: str, entry: dict) -> None:
 
 def main() -> None:
     args = parse_args()
+
+    if args.reauth:
+        clear_cached_token()
+        console.print("[yellow]Cached token cleared.[/yellow]")
+
     cfg = load_config(args.config)
     apply_cli_overrides(cfg, args)
 
     anthropic_key = require_env("ANTHROPIC_API_KEY")
     client = anthropic.Anthropic(api_key=anthropic_key)
 
-    # Resolve Robinhood MCP token
+    # Resolve token — triggers browser OAuth on first use
     try:
         token = get_robinhood_mcp_token()
-    except (FileNotFoundError, KeyError, ValueError) as e:
+    except Exception as e:
         console.print(f"[red]Auth error:[/red] {e}")
         sys.exit(1)
 
@@ -133,6 +139,7 @@ def main() -> None:
             print_portfolio(portfolio)
         except Exception as e:
             console.print(f"[red]Connection failed:[/red] {e}")
+            console.print("[dim]If the token expired, run: python3 bot.py --reauth[/dim]")
             sys.exit(1)
         return
 
@@ -153,6 +160,7 @@ def main() -> None:
             )
     except Exception as e:
         console.print(f"[red]Failed to fetch portfolio:[/red] {e}")
+        console.print("[dim]If the token expired, run: python3 bot.py --reauth[/dim]")
         sys.exit(1)
 
     print_portfolio(portfolio)

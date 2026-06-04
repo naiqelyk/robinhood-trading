@@ -1,5 +1,4 @@
 from __future__ import annotations
-import json
 import anthropic
 from robinhood.models import PortfolioState, RebalancePlan, ExecutionSummary
 
@@ -39,17 +38,6 @@ def _build_toolset(allowed_tools: list[str]) -> dict:
     }
 
 
-def _get_tool_names(content) -> list[str]:
-    names = []
-    for block in content:
-        btype = getattr(block, "type", None) or (block.get("type") if isinstance(block, dict) else None)
-        if btype == "tool_use":
-            name = getattr(block, "name", None) or (block.get("name") if isinstance(block, dict) else None)
-            if name:
-                names.append(name)
-    return names
-
-
 def _run_loop(
     client: anthropic.Anthropic,
     model: str,
@@ -62,12 +50,11 @@ def _run_loop(
 ) -> list[dict]:
     mcp_server = _build_mcp_server(token)
     toolset = _build_toolset(allowed_tools)
-
     messages = [{"role": "user", "content": initial_message}]
 
     for i in range(max_iterations):
         if on_status:
-            on_status(f"turn {i + 1} — waiting for response…")
+            on_status(f"turn {i + 1}…")
 
         response = client.beta.messages.create(
             model=model,
@@ -84,19 +71,7 @@ def _run_loop(
         if response.stop_reason == "end_turn":
             return messages
 
-        if response.stop_reason == "pause_turn":
-            # Server-side iteration limit hit — re-issue without a new user message
-            tool_names = _get_tool_names(response.content)
-            if on_status:
-                if tool_names:
-                    on_status(f"turn {i + 1} — calling {', '.join(tool_names)}…")
-                else:
-                    on_status(f"turn {i + 1} — server continuing…")
-            continue
-
-        if response.stop_reason == "max_tokens":
-            if on_status:
-                on_status(f"turn {i + 1} — token limit reached, continuing…")
+        if response.stop_reason in ("pause_turn", "max_tokens"):
             messages.append({"role": "user", "content": "Please continue."})
             continue
 
@@ -137,11 +112,10 @@ def get_portfolio_state(
     messages = _run_loop(
         client, model, system,
         "Fetch my current portfolio state.",
-        token,
-        READ_ONLY_TOOLS,
+        token, READ_ONLY_TOOLS,
         on_status=on_status,
     )
-    raw = _extract_last_text(messages)
+    raw = _extract_last_text(messages).strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return PortfolioState.model_validate_json(raw)
@@ -162,9 +136,8 @@ EXECUTION RULES (strictly enforced):
 1. Call review_equity_order BEFORE every place_equity_order. If review returns errors, skip that symbol.
 2. Execute SELLS before BUYS.
 3. Use type="market" and dollar_amount for all orders (fractional shares).
-4. After each completed order, note: symbol, action, dollar_amount, order_id.
-5. If a symbol fails get_equity_tradability, skip it and record the reason.
-6. When all orders are done (or skipped), output ONLY this JSON (no prose):
+4. If get_equity_tradability fails for a symbol, skip it and record the reason.
+5. When all orders are done (or skipped), output ONLY this JSON (no prose):
 {{
   "completed": [{{"symbol": "...", "action": "buy"|"sell", "dollar_amount": 0.0, "order_id": "..."}}],
   "skipped": [{{"symbol": "...", "reason": "..."}}],
@@ -177,12 +150,11 @@ REBALANCE PLAN TO EXECUTE:
     messages = _run_loop(
         client, model, system,
         "Execute the rebalance plan.",
-        token,
-        EXECUTION_TOOLS,
+        token, EXECUTION_TOOLS,
         max_iterations=max_iterations,
         on_status=on_status,
     )
-    raw = _extract_last_text(messages)
+    raw = _extract_last_text(messages).strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return ExecutionSummary.model_validate_json(raw)

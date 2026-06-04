@@ -150,7 +150,7 @@ def main() -> None:
         "dry_run": cfg.guardrails.dry_run,
     }
 
-    # ── Phase 0: Portfolio snapshot ───────────────────────────────────────────
+    # ── Phase 0: Portfolio Snapshot ───────────────────────────────────────────
     console.rule("[bold blue]Phase 0 — Portfolio Snapshot[/bold blue]")
     try:
         with console.status("[bold]Fetching portfolio…[/bold]") as status:
@@ -169,9 +169,9 @@ def main() -> None:
     current_symbols = [p.symbol for p in portfolio.positions]
     candidate_symbols = resolve_symbols(args, cfg, current_symbols)
 
-    # ── Discovery: external signals from Reddit & news ────────────────────────
+    # ── Phase 1: Discovery ───────────────────────────────────────────────────
     if cfg.research.discovery_max_symbols > 0:
-        console.rule("[bold blue]Discovery — Reddit & News[/bold blue]")
+        console.rule("[bold blue]Phase 1 — Discovery[/bold blue]")
         with console.status("[bold]Searching Reddit and financial news for stocks matching your strategy…[/bold]"):
             discovered = discover_symbols(
                 strategy=strategy,
@@ -191,8 +191,8 @@ def main() -> None:
         console.print("[yellow]No candidate symbols to research. Add symbols via --symbols or config.yaml.[/yellow]")
         sys.exit(0)
 
-    # ── Phase 1: Research ─────────────────────────────────────────────────────
-    console.rule("[bold blue]Phase 1 — Research[/bold blue]")
+    # ── Phase 2: Research ────────────────────────────────────────────────────
+    console.rule("[bold blue]Phase 2 — Research[/bold blue]")
     console.print(f"Researching {len(candidate_symbols)} symbols: {', '.join(candidate_symbols)}")
     research_bundle = research_symbols(
         candidate_symbols,
@@ -200,8 +200,8 @@ def main() -> None:
         console=console,
     )
 
-    # ── Phase 2: Analysis ─────────────────────────────────────────────────────
-    console.rule("[bold blue]Phase 2 — Analysis[/bold blue]")
+    # ── Phase 3: Analysis ────────────────────────────────────────────────────
+    console.rule("[bold blue]Phase 3 — Analysis[/bold blue]")
     console.print(f"Strategy: [italic]{strategy}[/italic]\n")
     try:
         signals = analyze(client, strategy, research_bundle, portfolio, cfg.models, cfg.guardrails, console=console)
@@ -243,8 +243,8 @@ def main() -> None:
             console.print("[yellow]Aborted.[/yellow]")
             return
 
-    # ── Phase 3: Execution ────────────────────────────────────────────────────
-    console.rule("[bold blue]Phase 3 — Execution[/bold blue]")
+    # ── Phase 4: Execution ────────────────────────────────────────────────────
+    console.rule("[bold blue]Phase 4 — Execution[/bold blue]")
     try:
         with console.status("[bold]Executing orders…[/bold]") as status:
             summary = execute_plan(
